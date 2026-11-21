@@ -7,6 +7,7 @@ export type CompType =
   | 'D' | 'LED' | 'ZD'
   | 'SW'
   | 'NPN' | 'PNP'
+  | 'NMOS' | 'PMOS' | 'NJF' | 'PJF'
   | 'OPAMP'
   | 'AM' | 'VM'
   | 'GND' | 'LABEL';
@@ -150,6 +151,50 @@ export const COMPONENTS: Record<CompType, CompDef> = {
     defaults: { beta: 100 },
     schema: [{ key: 'beta', label: '전류 증폭률 β', kind: 'number' }],
   },
+  NMOS: {
+    type: 'NMOS', label: 'N채널 MOSFET', prefix: 'M',
+    pins: [{ name: 'G', x: -2, y: 0 }, { name: 'D', x: 1, y: -2 }, { name: 'S', x: 1, y: 2 }],
+    category: '반도체',
+    defaults: { vth: 2, k: 0.01, lambda: 0.01 },
+    schema: [
+      { key: 'vth', label: '문턱 전압 V_th', kind: 'number', unit: 'V' },
+      { key: 'k', label: '전도 계수 k = μCox·W/L', kind: 'number', unit: 'A/V²', hint: '포화 전류 I_D = ½k(V_GS − V_th)²' },
+      { key: 'lambda', label: '채널 길이 변조 λ', kind: 'number', unit: '1/V' },
+    ],
+  },
+  PMOS: {
+    type: 'PMOS', label: 'P채널 MOSFET', prefix: 'M',
+    pins: [{ name: 'G', x: -2, y: 0 }, { name: 'D', x: 1, y: 2 }, { name: 'S', x: 1, y: -2 }],
+    category: '반도체',
+    defaults: { vth: -2, k: 0.01, lambda: 0.01 },
+    schema: [
+      { key: 'vth', label: '문턱 전압 V_th (음수)', kind: 'number', unit: 'V' },
+      { key: 'k', label: '전도 계수 k = μCox·W/L', kind: 'number', unit: 'A/V²', hint: '포화 전류 |I_D| = ½k(V_SG − |V_th|)²' },
+      { key: 'lambda', label: '채널 길이 변조 λ', kind: 'number', unit: '1/V' },
+    ],
+  },
+  NJF: {
+    type: 'NJF', label: 'N채널 JFET', prefix: 'J',
+    pins: [{ name: 'G', x: -2, y: 0 }, { name: 'D', x: 1, y: -2 }, { name: 'S', x: 1, y: 2 }],
+    category: '반도체',
+    defaults: { idss: 0.01, vp: -2, lambda: 0.01 },
+    schema: [
+      { key: 'idss', label: '포화 드레인 전류 I_DSS', kind: 'number', unit: 'A', hint: 'V_GS = 0 일 때의 포화 전류' },
+      { key: 'vp', label: '핀치오프 전압 V_P (음수)', kind: 'number', unit: 'V' },
+      { key: 'lambda', label: '채널 길이 변조 λ', kind: 'number', unit: '1/V' },
+    ],
+  },
+  PJF: {
+    type: 'PJF', label: 'P채널 JFET', prefix: 'J',
+    pins: [{ name: 'G', x: -2, y: 0 }, { name: 'D', x: 1, y: 2 }, { name: 'S', x: 1, y: -2 }],
+    category: '반도체',
+    defaults: { idss: 0.01, vp: 2, lambda: 0.01 },
+    schema: [
+      { key: 'idss', label: '포화 드레인 전류 I_DSS', kind: 'number', unit: 'A', hint: 'V_GS = 0 일 때의 포화 전류 크기' },
+      { key: 'vp', label: '핀치오프 전압 V_P (양수)', kind: 'number', unit: 'V' },
+      { key: 'lambda', label: '채널 길이 변조 λ', kind: 'number', unit: '1/V' },
+    ],
+  },
   OPAMP: {
     type: 'OPAMP', label: '연산 증폭기', prefix: 'U',
     pins: [{ name: '−', x: -3, y: -1 }, { name: '+', x: -3, y: 1 }, { name: 'out', x: 3, y: 0 }],
@@ -178,6 +223,13 @@ export const COMPONENTS: Record<CompType, CompDef> = {
     schema: [{ key: 'net', label: '넷 이름 (같은 이름끼리 연결)', kind: 'text' }],
   },
 };
+
+/** 3단자 트랜지스터 분류 */
+export const BJT_TYPES: CompType[] = ['NPN', 'PNP'];
+export const FET_TYPES: CompType[] = ['NMOS', 'PMOS', 'NJF', 'PJF'];
+export const TRANSISTOR_TYPES: CompType[] = [...BJT_TYPES, ...FET_TYPES];
+export const isFet = (t: string) => (FET_TYPES as string[]).includes(t);
+export const isTransistor = (t: string) => (TRANSISTOR_TYPES as string[]).includes(t);
 
 /** 회로를 구성하는 배치된 소자 */
 export interface Component {
@@ -280,6 +332,8 @@ export function valueLabel(c: Component): string {
     case 'ZD': return `Vz=${formatSI(num(p, 'vz'), 'V')}`;
     case 'LED': return String(p.color ?? '');
     case 'NPN': case 'PNP': return `β=${num(p, 'beta', 100)}`;
+    case 'NMOS': case 'PMOS': return `Vth=${formatSI(num(p, 'vth'), 'V')}`;
+    case 'NJF': case 'PJF': return `IDSS=${formatSI(num(p, 'idss'), 'A')}`;
     case 'SW': return p.closed ? '닫힘' : '열림';
     case 'LABEL': return String(p.net ?? '');
     default: return '';

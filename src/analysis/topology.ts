@@ -38,7 +38,7 @@ export class Graph {
  * exclude 로 지정한 소자는 떼어내고 계산한다. BJT/연산증폭기가 있으면 undefined.
  */
 export function theveninResistance(net: Netlist, op: OpResult, a: number, b: number, exclude: Set<string>): number | undefined {
-  if (net.elements.some(e => ['NPN', 'PNP', 'OPAMP'].includes(e.type))) return undefined;
+  if (net.elements.some(e => ['NPN', 'PNP', 'OPAMP', 'NMOS', 'PMOS', 'NJF', 'PJF'].includes(e.type))) return undefined;
   if (!op.ok) return undefined;
   const elements: SimElement[] = [];
   for (const e of net.elements) {

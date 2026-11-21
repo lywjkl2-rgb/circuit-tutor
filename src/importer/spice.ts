@@ -97,6 +97,38 @@ export function parseSpice(text: string): SpiceParseResult {
           push(pnp ? 'PNP' : 'NPN', [tok[2], tok[1], tok[3]], { beta: bf ? spiceNum(bf[1]) ?? 100 : 100 });
           break;
         }
+        case 'M': {
+          // M이름 D G S [B] 모델 [W= L=] → 내부 핀 [G, D, S] (바디는 소스에 연결된 것으로 간주)
+          const rest = tok.slice(4);
+          const modelTok = (rest.find(t => !t.includes('=') && models.has(t.toLowerCase())) ?? rest.find(t => !t.includes('=') && !/^\d/.test(t)) ?? '').toLowerCase();
+          const stmt = (models.get(modelTok) ?? '').toLowerCase();
+          const pmos = /pmos/.test(stmt) || /^p|pmos/.test(modelTok);
+          const par = (k: string, src: string) => { const mm = src.match(new RegExp(`\\b${k}\\s*=\\s*([^\\s)]+)`, 'i')); return mm ? spiceNum(mm[1]) : null; };
+          const vto = par('vto', stmt), kp = par('kp', stmt), lam = par('lambda', stmt);
+          const inst = tok.slice(4).join(' ');
+          const w = par('w', inst) ?? 1, l = par('l', inst) ?? 1;
+          const props: Props = {};
+          if (vto !== null) props.vth = pmos ? -Math.abs(vto) : Math.abs(vto);
+          if (kp !== null) props.k = (kp * w) / l;
+          if (lam !== null) props.lambda = lam;
+          push(pmos ? 'PMOS' : 'NMOS', [tok[2], tok[1], tok[3]], props);
+          break;
+        }
+        case 'J': {
+          // J이름 D G S 모델 → 내부 핀 [G, D, S]
+          const modelTok = (tok[4] ?? '').toLowerCase();
+          const stmt = (models.get(modelTok) ?? '').toLowerCase();
+          const pjf = /pjf/.test(stmt) || /^p|pjf/.test(modelTok);
+          const par = (k: string) => { const mm = stmt.match(new RegExp(`\\b${k}\\s*=\\s*([^\\s)]+)`, 'i')); return mm ? spiceNum(mm[1]) : null; };
+          const vto = par('vto'), beta = par('beta'), lam = par('lambda');
+          const props: Props = {};
+          const vp = vto !== null ? Math.abs(vto) : 2;
+          if (vto !== null) props.vp = pjf ? vp : -vp;
+          if (beta !== null) props.idss = beta * vp * vp; // SPICE: Id = β(VGS − VTO)²
+          if (lam !== null) props.lambda = lam;
+          push(pjf ? 'PJF' : 'NJF', [tok[2], tok[1], tok[3]], props);
+          break;
+        }
         case 'X': case 'U': case 'E': {
           // X/U: in+ in- out  또는 in+ in- V+ V- out (741 계열)
           const nodes = tok.slice(1).filter(t => !/^(opamp|ua741|lm741|lm358|tl07\d|ideal.*)$/i.test(t) && !t.includes('='));
@@ -149,6 +181,20 @@ export function toSpice(net: { nodeNames: string[]; elements: { type: CompType; 
       case 'LED': lines.push(`${e.name} ${n[0]} ${n[1]} LED_${p.color}`); models.add(`.model LED_${p.color} D(N=2)`); break;
       case 'ZD': lines.push(`${e.name} ${n[0]} ${n[1]} DZ${g(p, 'vz')}`); models.add(`.model DZ${g(p, 'vz')} D(BV=${g(p, 'vz')})`); break;
       case 'NPN': case 'PNP': lines.push(`${e.name} ${n[1]} ${n[0]} ${n[2]} Q${e.type}`); models.add(`.model Q${e.type} ${e.type}(BF=${g(p, 'beta', 100)})`); break;
+      case 'NMOS': case 'PMOS': {
+        // 내부 핀 [G, D, S] → SPICE: M D G S B(=S) 모델
+        const mn = `${e.type}_${e.name}`;
+        lines.push(`${e.name.startsWith('M') ? '' : 'M'}${e.name} ${n[1]} ${n[0]} ${n[2]} ${n[2]} ${mn}`);
+        models.add(`.model ${mn} ${e.type}(VTO=${g(p, 'vth', e.type === 'NMOS' ? 2 : -2)} KP=${g(p, 'k', 0.01)} LAMBDA=${g(p, 'lambda', 0.01)})`);
+        break;
+      }
+      case 'NJF': case 'PJF': {
+        const mn = `${e.type}_${e.name}`;
+        const vp = Math.abs(g(p, 'vp', 2)) || 2;
+        lines.push(`${e.name.startsWith('J') ? '' : 'J'}${e.name} ${n[1]} ${n[0]} ${n[2]} ${mn}`);
+        models.add(`.model ${mn} ${e.type}(VTO=${e.type === 'NJF' ? -vp : vp} BETA=${Math.abs(g(p, 'idss', 0.01)) / (vp * vp)} LAMBDA=${g(p, 'lambda', 0.01)})`);
+        break;
+      }
       case 'OPAMP': lines.push(`X${e.name} ${n[1]} ${n[0]} ${n[2]} opamp`); break;
       case 'SW': lines.push(`${e.name} ${n[0]} ${n[1]} ${p.closed ? 'ON' : 'OFF'}`); break;
       case 'AM': lines.push(`V${e.name} ${n[0]} ${n[1]} DC 0 ; ammeter`); break;

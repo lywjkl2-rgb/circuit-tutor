@@ -3,10 +3,13 @@
 //  - 과도 해석: 사다리꼴 적분(불연속 직후엔 후진 오일러)
 //  - AC 해석: 동작점에서 선형화한 복소 MNA 주파수 스윕
 
-import { COMPONENTS, num } from './components';
+import { COMPONENTS, isFet, num } from './components';
 import type { Netlist, SimElement } from './netlist';
 import { solveComplex, solveReal, type Cx } from './linalg';
-import { bjtIV, BJT_IS, diodeIV, diodeParams, pnjlim, vcrit, VT, type DiodeParams } from './models';
+import { bjtIV, BJT_IS, diodeIV, diodeParams, fetIV, fetParams, pnjlim, vcrit, VT, type DiodeParams } from './models';
+
+/** JFET 게이트–채널 PN 접합 */
+const JFET_GATE: DiodeParams = { is: 1e-14, n: 1, label: 'JFET 게이트 접합', vfNominal: 0.6 };
 
 export const GMIN = 1e-12;
 export const SW_RON = 1e-3;
@@ -135,7 +138,7 @@ export class Simulator {
   }
 
   get isLinear(): boolean {
-    return !this.net.elements.some(e => ['D', 'LED', 'ZD', 'NPN', 'PNP', 'OPAMP'].includes(e.type));
+    return !this.net.elements.some(e => ['D', 'LED', 'ZD', 'NPN', 'PNP', 'OPAMP'].includes(e.type) || isFet(e.type));
   }
 
   private V(x: number[], node: number) { return node === 0 ? 0 : x[node - 1]; }
@@ -277,6 +280,51 @@ export class Simulator {
           addG(nb, ne, GMIN); addG(nb, nc, GMIN);
           break;
         }
+        case 'NMOS': case 'PMOS': case 'NJF': case 'PJF': {
+          const fp = fetParams(e.type, e.props);
+          const s = fp.s;
+          const [ng, ndr, nsrc] = nd;
+          const vg = this.V(x, ng), vdr = this.V(x, ndr), vsr = this.V(x, nsrc);
+          let vgs = s * (vg - vsr), vds = s * (vdr - vsr);
+          let vj1 = s * (vg - vsr), vj2 = s * (vg - vdr); // JFET 게이트 접합 (G–S, G–D)
+          const prev = this.junc.get(idx);
+          if (limit && prev) {
+            // 뉴턴 반복 한 번에 게이트·드레인 전압이 너무 크게 움직이지 않도록 제한
+            const lim = (v: number, p: number, m: number) => (Math.abs(v - p) > m ? p + Math.sign(v - p) * m : v);
+            const lg = lim(vgs, prev[0], 1), ld = lim(vds, prev[1], 4);
+            if (lg !== vgs || ld !== vds) limited = true;
+            vgs = lg; vds = ld;
+            if (fp.jfet) {
+              const vcr = vcrit(JFET_GATE.is, VT);
+              const l1 = pnjlim(vj1, prev[2] ?? 0, VT, vcr), l2 = pnjlim(vj2, prev[3] ?? 0, VT, vcr);
+              if (Math.abs(l1 - vj1) > 1e-12 || Math.abs(l2 - vj2) > 1e-12) limited = true;
+              vj1 = l1; vj2 = l2;
+            }
+          }
+          if (limit) this.junc.set(idx, [vgs, vds, vj1, vj2]);
+          const m = fetIV(vgs, vds, fp.vt, fp.K, fp.lambda);
+          // 드레인으로 들어가는 전류 = s·(id0 − gm·vgs_l − gds·vds_l) + gm·(vg − vs) + gds·(vd − vs)
+          const c = s * (m.id - m.gm * vgs - m.gds * vds);
+          const coef: [number, number][] = [[ng, m.gm], [ndr, m.gds], [nsrc, -(m.gm + m.gds)]];
+          addCurrent(ndr, c, coef);
+          addCurrent(nsrc, -c, coef.map(([n2, gg]) => [n2, -gg] as [number, number]));
+          addG(ndr, nsrc, GMIN);
+          if (fp.jfet) {
+            // 게이트 접합 다이오드: N채널은 게이트→채널, P채널은 채널→게이트 방향이 순방향
+            const junction = (vj: number, other: number) => {
+              const { i, g } = diodeIV(vj, JFET_GATE);
+              const gt = g + GMIN;
+              const c0 = s * (i + GMIN * vj - gt * vj);
+              addCurrent(ng, c0, [[ng, gt], [other, -gt]]);
+              addCurrent(other, -c0, [[ng, -gt], [other, gt]]);
+            };
+            junction(vj1, nsrc);
+            junction(vj2, ndr);
+          } else {
+            addG(ng, nsrc, GMIN); // 절연 게이트: 아주 작은 누설만
+          }
+          break;
+        }
         case 'OPAMP': {
           const [nm, np, no] = nd;
           const Aol = Math.max(num(e.props, 'gain', 1e5), 1);
@@ -392,6 +440,22 @@ export class Simulator {
           const onBE = vbe > 0.5, onBC = vbc > 0.4;
           state = !onBE ? 'cutoff' : onBC ? 'saturation' : 'active';
           if (Math.abs(m.ic) < 1e-7) state = 'cutoff';
+          break;
+        }
+        case 'NMOS': case 'PMOS': case 'NJF': case 'PJF': {
+          const fp = fetParams(e.type, e.props);
+          const s = fp.s;
+          const vgs = s * (v[0] - v[2]), vds = s * (v[1] - v[2]);
+          const m = fetIV(vgs, vds, fp.vt, fp.K, fp.lambda);
+          let ig = 0, idr = s * m.id;
+          if (fp.jfet) {
+            const igs = diodeIV(vgs, JFET_GATE).i, igd = diodeIV(s * (v[0] - v[1]), JFET_GATE).i;
+            ig = s * (igs + igd);
+            idr -= s * igd;
+          }
+          pin = [ig, idr, -(ig + idr)];
+          state = Math.abs(m.id) < 1e-9 ? 'fet-cutoff' : m.region === 'triode' ? 'fet-triode' : m.region === 'sat' ? 'fet-sat' : 'fet-cutoff';
+          if (fp.jfet && Math.abs(ig) > 1e-5) state = 'fet-gate';
           break;
         }
       }
@@ -602,6 +666,10 @@ export function stateKo(s?: string): string {
     case 'saturation': return '포화 영역';
     case 'cutoff': return '차단 영역';
     case 'linear': return '선형 동작';
+    case 'fet-cutoff': return '차단 영역';
+    case 'fet-triode': return '트라이오드(선형·옴) 영역';
+    case 'fet-sat': return '포화(핀치오프) 영역';
+    case 'fet-gate': return '게이트 접합 순방향 도통(비정상)';
     case 'sat+': return '+포화';
     case 'sat-': return '−포화';
     case 'closed': return '닫힘';

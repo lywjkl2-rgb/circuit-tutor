@@ -1,7 +1,7 @@
 // 추상 회로(소자 + 핀별 넷 이름 + 대략적 위치) → 편집 가능한 회로도(배치 + 배선)
 // 이미지/PDF 인식 결과와 SPICE 넷리스트 가져오기에서 공통으로 사용한다.
 
-import { COMPONENTS, pinPositions, type Component, type CompType, type Props, type Schematic, type Wire } from '../engine/components';
+import { COMPONENTS, pinPositions, type Component, type CompType, type Props, type Schematic, type Wire, isTransistor } from '../engine/components';
 import { buildNetlist } from '../engine/netlist';
 import { newId } from '../editor/store';
 
@@ -91,7 +91,7 @@ function autoPositions(ac: AbstractCircuit, isGround: (n?: string) => boolean) {
 
 function rotationsFor(type: CompType, orientation?: 'horizontal' | 'vertical'): number[] {
   const nativeVertical = ['V', 'VAC', 'VPULSE', 'I'].includes(type);
-  if (['NPN', 'PNP', 'OPAMP'].includes(type)) return [0, 2];
+  if (type === 'OPAMP' || isTransistor(type)) return [0, 2];
   if (!orientation) return [0, 1, 2, 3];
   const wantVertical = orientation === 'vertical';
   return wantVertical === nativeVertical ? [0, 2] : [1, 3];
@@ -101,7 +101,7 @@ function bbox(c: Component): [number, number, number, number] {
   const pts = pinPositions(c);
   let x0 = c.x - 1, y0 = c.y - 1, x1 = c.x + 1, y1 = c.y + 1;
   for (const p of pts) { x0 = Math.min(x0, p.x); y0 = Math.min(y0, p.y); x1 = Math.max(x1, p.x); y1 = Math.max(y1, p.y); }
-  if (c.type === 'OPAMP' || c.type === 'NPN' || c.type === 'PNP') { y0 = Math.min(y0, c.y - 2); y1 = Math.max(y1, c.y + 2); }
+  if (c.type === 'OPAMP' || isTransistor(c.type)) { y0 = Math.min(y0, c.y - 2); y1 = Math.max(y1, c.y + 2); }
   return [x0, y0, x1, y1];
 }
 
@@ -128,7 +128,7 @@ export function layoutCircuit(ac: AbstractCircuit, opts: { width?: number } = {}
   for (let pass = 0; pass < 2; pass++) {
     for (const p of placed) {
       let best = p.c.rot, bestFlip = false, bestCost = Infinity;
-      for (const rot of rotationsFor(p.ac.type, p.ac.orientation)) for (const flip of p.ac.type === 'OPAMP' || p.ac.type === 'NPN' || p.ac.type === 'PNP' ? [false, true] : [false]) {
+      for (const rot of rotationsFor(p.ac.type, p.ac.orientation)) for (const flip of p.ac.type === 'OPAMP' || isTransistor(p.ac.type) ? [false, true] : [false]) {
         const pins = pinPositions({ ...p.c, rot, flip });
         let cost = 0;
         pins.forEach((pin, i) => {

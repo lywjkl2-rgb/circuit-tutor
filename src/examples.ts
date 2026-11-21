@@ -196,6 +196,85 @@ export const EXAMPLES: Example[] = [
     sim: { tStop: 0.002 },
   },
   {
+    id: 'mosfet-switch', title: 'MOSFET 스위치로 LED 켜기', level: '중급',
+    summary: '게이트 전압만으로(게이트 전류 없이) 큰 드레인 전류를 켜고 끄는 로우사이드 스위치',
+    build: () => ({
+      components: [
+        comp('V', 'VDD', 0, 0, 0, { voltage: 5 }), gnd(0, 2),
+        comp('VPULSE', 'VG', 2, 3, 0, { low: 0, high: 5, frequency: 200, duty: 50 }), gnd(2, 5),
+        comp('R', 'RG', 5, -1, 0, { resistance: 100 }),
+        comp('R', 'RPD', 7, 2, 1, { resistance: 100000 }), gnd(7, 4),
+        comp('NMOS', 'M1', 10, -1, 0, { vth: 2, k: 0.1, lambda: 0.01 }), gnd(11, 1),
+        comp('LED', 'D1', 11, -5, 1, { color: 'green' }), comp('R', 'RL', 11, -9, 1, { resistance: 150 }),
+      ],
+      wires: [...wire(0, -2, 0, -12, 11, -12, 11, -11), ...wire(2, 1, 2, -1, 3, -1), ...wire(7, -1, 8, -1), ...wire(7, -1, 7, 0)],
+    }),
+    sim: { tStop: 0.01 },
+  },
+  {
+    id: 'cmos-inverter', title: 'CMOS 인버터 (NOT 게이트)', level: '중급',
+    summary: 'PMOS와 NMOS가 번갈아 켜지며 입력을 뒤집는 디지털 회로의 기본 단위',
+    build: () => ({
+      components: [
+        comp('V', 'VDD', -4, -6, 0, { voltage: 5 }), gnd(-4, -4),
+        comp('VPULSE', 'VIN', 2, 2, 0, { low: 0, high: 5, frequency: 1000, duty: 50 }), gnd(2, 4),
+        comp('PMOS', 'M1', 8, -4, 0, { vth: -1, k: 0.002, lambda: 0.01 }),
+        comp('NMOS', 'M2', 8, 4, 0, { vth: 1, k: 0.002, lambda: 0.01 }), gnd(9, 6),
+        comp('C', 'CL', 13, 3, 1, { capacitance: 10e-9 }), gnd(13, 5),
+        label(16, 0, 'OUT'),
+      ],
+      wires: [
+        ...wire(-4, -8, 9, -8, 9, -6), ...wire(6, -4, 6, 4), ...wire(2, 0, 6, 0),
+        ...wire(9, -2, 9, 2), ...wire(9, 0, 13, 0, 16, 0), ...wire(13, 0, 13, 1),
+      ],
+    }),
+    sim: { tStop: 0.003 },
+  },
+  {
+    id: 'nmos-cs-amp', title: '공통 소스 증폭기 (MOSFET)', level: '응용',
+    summary: '분압 바이어스로 포화 영역에 둔 MOSFET이 게이트 전압 변화를 증폭하는 원리',
+    build: () => ({
+      components: [
+        comp('V', 'VDD', -6, 2, 0, { voltage: 12 }), gnd(-6, 4),
+        comp('VAC', 'VIN', -2, 3, 0, { amplitude: 0.05, frequency: 1000 }), gnd(-2, 5),
+        comp('C', 'CIN', 0, 0, 0, { capacitance: 1e-6 }),
+        comp('R', 'R1', 4, -5, 1, { resistance: 1e6 }), comp('R', 'R2', 4, 5, 1, { resistance: 470000 }), gnd(4, 7),
+        comp('NMOS', 'M1', 8, 0, 0, { vth: 2, k: 0.004, lambda: 0.01 }),
+        comp('R', 'RD', 9, -5, 1, { resistance: 4700 }), comp('R', 'RS', 9, 5, 1, { resistance: 1000 }), gnd(9, 7),
+        comp('C', 'CS', 12, 5, 1, { capacitance: 100e-6 }), gnd(12, 7),
+        label(14, -3, 'OUT'),
+      ],
+      wires: [
+        ...wire(-6, 0, -6, -8, 9, -8), ...wire(4, -8, 4, -7), ...wire(9, -8, 9, -7),
+        ...wire(-2, 1, -2, 0), ...wire(2, 0, 4, 0, 6, 0), ...wire(4, -3, 4, 3),
+        ...wire(9, -3, 9, -2), ...wire(9, 2, 9, 3, 12, 3), ...wire(9, -3, 14, -3),
+      ],
+    }),
+    sim: { tStop: 0.004, initial: 'op' },
+  },
+  {
+    id: 'jfet-amp', title: 'JFET 자기 바이어스 증폭기', level: '응용',
+    summary: '소스 저항의 전압 강하로 게이트를 음(−)으로 만드는 자기 바이어스와 JFET 공통 소스 증폭',
+    build: () => ({
+      components: [
+        comp('V', 'VDD', -6, 2, 0, { voltage: 15 }), gnd(-6, 4),
+        comp('VAC', 'VIN', -2, 3, 0, { amplitude: 0.05, frequency: 1000 }), gnd(-2, 5),
+        comp('C', 'CIN', 0, 0, 0, { capacitance: 1e-6 }),
+        comp('R', 'RG', 4, 5, 1, { resistance: 1e6 }), gnd(4, 7),
+        comp('NJF', 'J1', 8, 0, 0, { idss: 0.01, vp: -4, lambda: 0.01 }),
+        comp('R', 'RD', 9, -5, 1, { resistance: 2200 }), comp('R', 'RS', 9, 5, 1, { resistance: 470 }), gnd(9, 7),
+        comp('C', 'CS', 12, 5, 1, { capacitance: 100e-6 }), gnd(12, 7),
+        label(14, -3, 'OUT'),
+      ],
+      wires: [
+        ...wire(-6, 0, -6, -8, 9, -8, 9, -7),
+        ...wire(-2, 1, -2, 0), ...wire(2, 0, 4, 0, 6, 0), ...wire(4, 0, 4, 3),
+        ...wire(9, -3, 9, -2), ...wire(9, 2, 9, 3, 12, 3), ...wire(9, -3, 14, -3),
+      ],
+    }),
+    sim: { tStop: 0.004, initial: 'op' },
+  },
+  {
     id: 'wheatstone', title: '휘트스톤 브리지', level: '중급',
     summary: '두 분압기의 차 전압으로 미지 저항을 측정하는 브리지 회로',
     build: () => ({
