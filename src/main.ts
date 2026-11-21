@@ -1,7 +1,7 @@
 import 'katex/dist/katex.min.css';
 import './styles.css';
 
-import { COMPONENTS, formatSI, num, parseSI, valueLabel, type Component, type CompType, type PropSchema } from './engine/components';
+import { COMPONENTS, formatSI, num, parseSI, valueLabel, type Component, type CompType, type PropSchema, isFet, isTransistor } from './engine/components';
 import { buildNetlist, type Netlist } from './engine/netlist';
 import { runAll, stateKo, suggestTStop, type Analysis, type SimOptions } from './engine/simulator';
 import { cabs, carg } from './engine/linalg';
@@ -151,7 +151,7 @@ function renderPalette() {
       ${types.map(t => {
         const d = COMPONENTS[t];
         const c: Component = { id: 'p', type: t, name: '', x: 0, y: 0, rot: 0, props: d.defaults };
-        const vb = ['V', 'VAC', 'VPULSE', 'I'].includes(t) ? '-30 -45 60 90' : t === 'OPAMP' ? '-62 -45 124 90' : t === 'GND' ? '-20 -6 40 30' : t === 'LABEL' ? '-4 -14 62 28' : t === 'NPN' || t === 'PNP' ? '-44 -44 72 88' : '-44 -26 88 52';
+        const vb = ['V', 'VAC', 'VPULSE', 'I'].includes(t) ? '-30 -45 60 90' : t === 'OPAMP' ? '-62 -45 124 90' : t === 'GND' ? '-20 -6 40 30' : t === 'LABEL' ? '-4 -14 62 28' : isTransistor(t) ? '-44 -44 72 88' : '-44 -26 88 52';
         return `<button class="part" data-part="${t}" title="${d.label}${d.shortcut ? ` (단축키 ${d.shortcut})` : ''}"><svg viewBox="${vb}" class="part-icon">${symbolBody(c)}</svg><span>${d.label}</span></button>`;
       }).join('')}
     </div></div>`).join('');
@@ -403,8 +403,8 @@ function bindHighlights(root: HTMLElement) {
 function traceList(net: Netlist) {
   const out: { key: string; label: string; unit: string }[] = [];
   for (let i = 1; i < net.nodeCount; i++) out.push({ key: `v:${i}`, label: `V(${net.nodeNames[i]})`, unit: 'V' });
-  for (const e of net.elements) if (!['VM', 'OPAMP', 'NPN', 'PNP'].includes(e.type)) out.push({ key: `i:${e.id}`, label: `I(${e.name})`, unit: 'A' });
-  for (const e of net.elements) if (['NPN', 'PNP'].includes(e.type)) out.push({ key: `i:${e.id}`, label: `Ic(${e.name})`, unit: 'A' });
+  for (const e of net.elements) if (!['VM', 'OPAMP'].includes(e.type) && !isTransistor(e.type)) out.push({ key: `i:${e.id}`, label: `I(${e.name})`, unit: 'A' });
+  for (const e of net.elements) if (isTransistor(e.type)) out.push({ key: `i:${e.id}`, label: `${isFet(e.type) ? 'Id' : 'Ic'}(${e.name})`, unit: 'A' });
   return out;
 }
 
@@ -431,7 +431,7 @@ function renderScope() {
     if (kind === 'v') y = tran.frames.map(f => f.v[+id]);
     else {
       const idx = net.elements.findIndex(e => e.id === id);
-      const pin = ['NPN', 'PNP'].includes(net.elements[idx].type) ? 1 : 0;
+      const pin = isTransistor(net.elements[idx].type) ? 1 : 0;
       y = tran.frames.map(f => f.ip[idx][pin]);
     }
     traces.push({ label: item.label, color: PALETTE[k++ % PALETTE.length], x: ts, y, unit: item.unit, axis: kind === 'v' ? 'left' : 'right' });

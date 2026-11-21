@@ -3,7 +3,7 @@
 import { parseSI, type CompType, type Props } from '../engine/components';
 import type { AbstractCircuit, AbstractComponent } from './layout';
 
-export const RECOGNIZABLE: CompType[] = ['R', 'C', 'L', 'V', 'VAC', 'VPULSE', 'I', 'D', 'LED', 'ZD', 'SW', 'NPN', 'PNP', 'OPAMP', 'AM', 'VM'];
+export const RECOGNIZABLE: CompType[] = ['R', 'C', 'L', 'V', 'VAC', 'VPULSE', 'I', 'D', 'LED', 'ZD', 'SW', 'NPN', 'PNP', 'NMOS', 'PMOS', 'NJF', 'PJF', 'OPAMP', 'AM', 'VM'];
 
 /** 소자 종류별 핀 이름 (모델에게 알려주는 이름 → 내부 핀 순서) */
 export const PIN_NAMES: Record<string, string[]> = {
@@ -13,6 +13,8 @@ export const PIN_NAMES: Record<string, string[]> = {
   D: ['anode', 'cathode'], LED: ['anode', 'cathode'], ZD: ['anode', 'cathode'],
   SW: ['a', 'b'], AM: ['pos', 'neg'], VM: ['pos', 'neg'],
   NPN: ['base', 'collector', 'emitter'], PNP: ['base', 'collector', 'emitter'],
+  NMOS: ['gate', 'drain', 'source'], PMOS: ['gate', 'drain', 'source'],
+  NJF: ['gate', 'drain', 'source'], PJF: ['gate', 'drain', 'source'],
   OPAMP: ['inv', 'noninv', 'out'],
 };
 
@@ -118,6 +120,8 @@ export function recognizedToAbstract(r: RecognizedCircuit): { circuit: AbstractC
       }
       case 'ZD': if (v !== null) props.vz = v; break;
       case 'NPN': case 'PNP': if (v !== null && v > 1) props.beta = v; break;
+      case 'NMOS': case 'PMOS': if (v !== null) props.vth = type === 'PMOS' ? -Math.abs(v) : Math.abs(v); break;
+      case 'NJF': case 'PJF': if (v !== null) props.idss = Math.abs(v); break;
       case 'LED': {
         const col = ['red', 'yellow', 'green', 'blue', 'white'].find(k => variant.includes(k)) ?? (/빨|적/.test(variant) ? 'red' : /초록|녹/.test(variant) ? 'green' : /파랑|청/.test(variant) ? 'blue' : /노랑|황/.test(variant) ? 'yellow' : undefined);
         if (col) props.color = col;

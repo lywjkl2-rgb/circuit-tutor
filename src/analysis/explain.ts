@@ -1,9 +1,9 @@
 // 시뮬레이션 결과 → 단계별 해설 보고서 (한국어 + LaTeX)
 
-import { COMPONENTS, formatSI, num } from '../engine/components';
+import { COMPONENTS, formatSI, isFet, num } from '../engine/components';
 import type { Netlist, SimElement } from '../engine/netlist';
 import { stateKo, sourceValue, type Analysis, type OpResult } from '../engine/simulator';
-import { diodeParams } from '../engine/models';
+import { diodeParams, fetParams } from '../engine/models';
 import { cabs, carg } from '../engine/linalg';
 import { findPatterns } from './patterns';
 import { Graph, isVSource, type Pattern } from './topology';
@@ -70,7 +70,7 @@ export function explain(a: Analysis): Report {
 function pickOutputNode(net: Netlist, patterns: Pattern[]): number | undefined {
   const label = net.nodeNames.findIndex(n => /^(v?out|vo|output|출력)/i.test(n));
   if (label > 0) return label;
-  const prio = ['inverting', 'noninverting', 'summing', 'integrator', 'follower', 'comparator', 'bridge', 'halfwave', 'zener', 'common-emitter', 'emitter-follower', 'rlc', 'rc', 'rl', 'divider'];
+  const prio = ['inverting', 'noninverting', 'summing', 'integrator', 'follower', 'comparator', 'bridge', 'halfwave', 'zener', 'cmos-inverter', 'common-source', 'source-follower', 'common-emitter', 'emitter-follower', 'rlc', 'rc', 'rl', 'divider'];
   for (const k of prio) {
     const p = patterns.find(pp => pp.kind === k && pp.outputNode);
     if (p) return p.outputNode;
@@ -143,6 +143,8 @@ function termFor(e: SimElement, node: number, net: Netlist): string | null {
     case 'I': return pinIdx === 0 ? `${sym(e.name)}` : `-${sym(e.name)}`;
     case 'D': case 'LED': case 'ZD': return pinIdx === 0 ? `I_{${e.name}}` : `-I_{${e.name}}`;
     case 'NPN': case 'PNP': return ['I_{B', 'I_{C', 'I_{E'][pinIdx] + `,${e.name}}`;
+    case 'NMOS': case 'PMOS': return pinIdx === 0 ? null : (pinIdx === 1 ? '' : '-') + `I_{D,${e.name}}`;
+    case 'NJF': case 'PJF': return ['I_{G', 'I_{D', 'I_{S'][pinIdx] + `,${e.name}}`;
     case 'OPAMP': return pinIdx === 2 ? `I_{out,${e.name}}` : null;
     default: return null;
   }
@@ -189,12 +191,25 @@ function equationSection(a: Analysis): Section {
     blocks.push({ kind: 'subhead', text: '③ 전원·소자 제약식' });
     for (const c of constraints) blocks.push({ kind: 'math', tex: c });
   }
-  const nl = net.elements.filter(e => ['D', 'LED', 'ZD', 'NPN', 'PNP'].includes(e.type));
+  const nl = net.elements.filter(e => ['D', 'LED', 'ZD', 'NPN', 'PNP', 'NMOS', 'PMOS', 'NJF', 'PJF'].includes(e.type));
   if (nl.length) {
     blocks.push({ kind: 'subhead', text: '④ 비선형 소자 모델' });
     for (const e of nl) {
-      if (e.type === 'NPN' || e.type === 'PNP') {
-        blocks.push({ kind: 'math', tex: `I_{C,${e.name}} = \\beta I_{B,${e.name}},\\quad I_{B,${e.name}} \\approx \\frac{I_S}{\\beta}\\left(e^{V_{BE}/V_T} - 1\\right)\\quad(\\text{Ebers–Moll, }\\beta=${num(e.props, 'beta', 100)})` });
+      if (isFet(e.type)) {
+        const fp = fetParams(e.type, e.props);
+        const pch = fp.s < 0;
+        const vgs = pch ? 'V_{SG}' : 'V_{GS}', vds = pch ? 'V_{SD}' : 'V_{DS}';
+        const kTex = fp.jfet ? `\\frac{2I_{DSS}}{V_P^2}` : 'k';
+        const vt = fp.jfet ? (pch ? 'V_P' : '|V_P|') : (pch ? '|V_{th}|' : 'V_{th}');
+        const vtCond = fp.jfet ? `${vgs} - (-${vt})` : `${vgs} - ${vt}`;
+        blocks.push({
+          kind: 'math',
+          tex: `${pch ? `|I_{D,${e.name}}|` : `I_{D,${e.name}}`} = \\begin{cases} 0 & ${vtCond} \\le 0\\;(\\text{차단}) \\\\ ${kTex}\\left[V_{ov}${vds} - \\tfrac12 ${vds}^2\\right](1+\\lambda ${vds}) & ${vds} < V_{ov}\\;(\\text{트라이오드}) \\\\ \\tfrac12 ${kTex}\\,V_{ov}^2(1+\\lambda ${vds}) & ${vds} \\ge V_{ov}\\;(\\text{포화}) \\end{cases},\\quad V_{ov} = ${vtCond}`,
+        });
+        if (fp.jfet) blocks.push({ kind: 'p', text: `JFET는 $I_{DSS} = ${q(Math.abs(num(e.props, 'idss', 0.01)), 'A')}$, $V_P = ${q(num(e.props, 'vp'), 'V')}$이므로 포화 영역 식은 $I_D = I_{DSS}\\left(1 - V_{GS}/V_P\\right)^2$과 같습니다. 게이트–채널 PN 접합이 역바이어스일 때만 정상 동작합니다.` });
+        else blocks.push({ kind: 'p', text: `${e.name}: $V_{th} = ${q(num(e.props, 'vth'), 'V')}$, $k = ${q(fp.K, 'A/V²')}$, $\\lambda = ${tn(fp.lambda, 3)}\\,\\text{V}^{-1}$. 게이트는 산화막으로 절연되어 있어 직류 게이트 전류는 0입니다.` });
+      } else if (e.type === 'NPN' || e.type === 'PNP') {
+        blocks.push({ kind: 'math', tex: `I_{C,${e.name}} = \\\\beta I_{B,${e.name}},\\\\quad I_{B,${e.name}} \\\\approx \\\\frac{I_S}{\\\\beta}\\\\left(e^{V_{BE}/V_T} - 1\\\\right)\\\\quad(\\\\text{Ebers–Moll, }\\\\beta=${num(e.props, 'beta', 100)})` });
       } else {
         const p = diodeParams(e.type, e.props);
         blocks.push({ kind: 'math', tex: `I_{${e.name}} = I_S\\left(e^{V_D/(nV_T)} - 1\\right),\\quad I_S = ${tn(p.is, 3)}\\,\\text{A},\\; n = ${p.n}${p.bv ? `,\\; V_Z = ${q(p.bv, 'V')}` : ''}` });
@@ -253,6 +268,12 @@ function resultSection(net: Netlist, op: OpResult): Section {
       case 'NPN': case 'PNP': {
         const [ib, ic, ie] = r.pinCurrents;
         blocks.push({ kind: 'math', tex: `${e.name}:\\; I_B = ${q(ib, 'A')},\\; I_C = ${q(ic, 'A')},\\; I_E = ${q(-ie, 'A')},\\; V_{CE} = ${q(op.v[e.nodes[1]] - op.v[e.nodes[2]], 'V')}\\;(\\text{${stateKo(r.state)}})` });
+        break;
+      }
+      case 'NMOS': case 'PMOS': case 'NJF': case 'PJF': {
+        const [ig, id] = r.pinCurrents;
+        const [vg, vd, vs] = e.nodes.map(nd => op.v[nd]);
+        blocks.push({ kind: 'math', tex: `${e.name}:\\; V_{GS} = ${q(vg - vs, 'V')},\\; V_{DS} = ${q(vd - vs, 'V')},\\; I_D = ${q(id, 'A')}${e.type === 'NJF' || e.type === 'PJF' ? `,\\; I_G = ${q(ig, 'A')}` : ''}\\;(\\text{${stateKo(r.state)}})` });
         break;
       }
       case 'OPAMP':
@@ -518,6 +539,8 @@ function defaultRole(e: SimElement, g: Graph, op: OpResult, pc: number[]): { tit
     case 'AM': return { title: '전류계', text: '직렬로 끼워 전류를 측정합니다(내부 저항 0).' };
     case 'VM': return { title: '전압계', text: '병렬로 연결해 두 점의 전압차를 측정합니다(내부 저항 ∞).' };
     case 'NPN': case 'PNP': return { title: '트랜지스터', text: '베이스 전류로 컬렉터 전류를 제어합니다.' };
+    case 'NMOS': case 'PMOS': return { title: 'MOSFET', text: '게이트 전압으로 드레인 전류를 제어합니다(게이트 전류 0).' };
+    case 'NJF': case 'PJF': return { title: 'JFET', text: '역바이어스된 게이트 전압으로 채널 폭을 바꿔 드레인 전류를 제어합니다.' };
     case 'OPAMP': return { title: '연산증폭기', text: '두 입력 전압의 차를 크게 증폭합니다.' };
     default: return { title: COMPONENTS[e.type].label, text: '' };
   }

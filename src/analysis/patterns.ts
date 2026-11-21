@@ -1,9 +1,9 @@
 // 대표적인 교과서 회로 패턴을 찾아 원리·공식·소자 역할을 설명한다.
 
-import { formatSI, num } from '../engine/components';
+import { formatSI, isFet, num } from '../engine/components';
 import type { Netlist, SimElement } from '../engine/netlist';
 import type { OpResult } from '../engine/simulator';
-import { diodeParams } from '../engine/models';
+import { diodeParams, fetIV, fetParams } from '../engine/models';
 import { Graph, isDiode, isSource, isVSource, theveninResistance, type Pattern } from './topology';
 import { q, sym } from './tex';
 
@@ -310,6 +310,131 @@ export function findPatterns(net: Netlist, op: OpResult): Pattern[] {
       formulas: [
         `I_C = \\beta I_B`, `g_m = \\frac{I_C}{V_T} = ${q(gm, 'S')}`, `r_e = \\frac{V_T}{I_E} \\approx ${q(reIntr, 'Ω')}`,
         rc ? `A_v \\approx -\\frac{${sym(rc.name)}}{${re && !ce ? sym(re.name) + ' + ' : ''}r_e} \\approx ${(re && !ce ? av : -R(rc) / reIntr).toPrecision(3)}` : '',
+      ].filter(Boolean),
+      roles,
+    });
+  }
+
+  // ---------------------------------------------------------- FET (MOSFET · JFET)
+  const fets = els.filter(e => isFet(e.type));
+  const inCmos = new Set<string>();
+  // CMOS 인버터: 게이트·드레인을 공유하는 PMOS(소스=전원)와 NMOS(소스=접지)
+  for (const pm of fets.filter(e => e.type === 'PMOS')) {
+    const nm = fets.find(e => e.type === 'NMOS' && e.nodes[0] === pm.nodes[0] && e.nodes[1] === pm.nodes[1] && e.nodes[2] === 0);
+    if (!nm || !g.drivenBy(pm.nodes[2])) continue;
+    inCmos.add(pm.id); inCmos.add(nm.id);
+    const [nin, nout] = [pm.nodes[0], pm.nodes[1]];
+    const vdd = V(pm.nodes[2]);
+    const st = (e: SimElement) => (op.ok ? op.elements[els.indexOf(e)].state : undefined);
+    const on = (e: SimElement) => st(e) === 'fet-triode' || st(e) === 'fet-sat';
+    out.push({
+      kind: 'cmos-inverter', title: `CMOS 인버터 — ${pm.name}(PMOS) + ${nm.name}(NMOS)`, elementIds: [pm.id, nm.id], outputNode: nout,
+      text: [
+        `게이트가 묶인 PMOS와 NMOS가 전원(${f(vdd, 'V')})과 접지 사이에 직렬로 놓여 있습니다. 입력이 **Low**이면 PMOS가 켜지고 NMOS가 꺼져 출력이 전원에 연결(High)되고, 입력이 **High**이면 반대로 NMOS가 켜져 출력이 접지에 연결(Low)됩니다. 즉 입력을 뒤집는 **NOT 게이트**입니다.`,
+        `두 트랜지스터 중 하나는 항상 꺼져 있으므로 정상 상태에서는 전원에서 접지로 흐르는 전류가 거의 없습니다. 이것이 CMOS 디지털 회로가 전력을 적게 쓰는 이유입니다. (전류는 입력이 중간 전압을 지나가는 순간에만 흐릅니다.)`,
+        `현재 입력 ${f(V(nin), 'V')} → ${pm.name} ${on(pm) ? '켜짐' : '꺼짐'}, ${nm.name} ${on(nm) ? '켜짐' : '꺼짐'} → 출력 ${f(V(nout), 'V')}.`,
+      ],
+      formulas: [`V_{in} = 0 \\Rightarrow V_{out} \\approx V_{DD},\\qquad V_{in} = V_{DD} \\Rightarrow V_{out} \\approx 0`],
+      roles: {
+        [pm.id]: { title: '풀업(pull-up) 트랜지스터', text: '입력이 Low일 때 켜져 출력을 전원 쪽으로 끌어올림' },
+        [nm.id]: { title: '풀다운(pull-down) 트랜지스터', text: '입력이 High일 때 켜져 출력을 접지 쪽으로 끌어내림' },
+      },
+    });
+  }
+
+  for (const t of fets) {
+    if (inCmos.has(t.id)) continue;
+    const i = els.indexOf(t);
+    const res = op.ok ? op.elements[i] : undefined;
+    if (!res) continue;
+    const fp = fetParams(t.type, t.props);
+    const [ng, nd, ns] = t.nodes;
+    const pch = fp.s < 0;
+    const id = Math.abs(res.pinCurrents[1]);
+    const vgs = V(ng) - V(ns), vds = V(nd) - V(ns);
+    const vgsE = fp.s * vgs, vdsE = fp.s * vds; // N채널 기준으로 환산한 값
+    const vov = vgsE - fp.vt;
+    const m = fetIV(vgsE, vdsE, fp.vt, fp.K, fp.lambda);
+    const rd = g.at(nd, e => e.type === 'R').map(x => x.e)[0];
+    const rs = ns !== 0 ? g.at(ns, e => e.type === 'R').map(x => x.e).find(e => g.other(e, ns) === 0 || g.drivenBy(g.other(e, ns))) : undefined;
+    const cs = ns !== 0 ? g.at(ns, e => e.type === 'C' && g.other(e, ns) === 0).map(x => x.e)[0] : undefined;
+    const rgs = g.at(ng, e => e.type === 'R').map(x => x.e);
+    const kind = fp.jfet ? 'JFET' : 'MOSFET';
+    const chan = pch ? 'P채널' : 'N채널';
+    const basics = fp.jfet
+      ? `${t.name}(${chan} JFET)는 게이트–채널 사이의 PN 접합을 **역바이어스**로 걸어 생기는 공핍층으로 채널 폭을 조절합니다. $V_{GS} = 0$일 때 채널이 가장 넓어 최대 전류 $I_{DSS} = ${q(Math.abs(num(t.props, 'idss', 0.01)), 'A')}$가 흐르고, $V_{GS}$가 핀치오프 전압 $V_P = ${q(num(t.props, 'vp'), 'V')}$에 이르면 채널이 막혀 전류가 0이 됩니다(공핍형). 게이트 전류는 거의 0입니다.`
+      : `${t.name}(${chan} 증가형 MOSFET)의 게이트는 얇은 산화막으로 절연되어 직류 전류가 흐르지 않습니다. 게이트–소스 전압 ${pch ? '$V_{SG}$' : '$V_{GS}$'}가 문턱 전압 $|V_{th}| = ${q(fp.vt, 'V')}$를 넘으면 게이트 아래에 반전층(채널)이 생겨 드레인–소스 사이로 전류가 흐릅니다. 넘은 만큼($V_{ov}$, 과구동 전압)이 클수록 채널이 두꺼워집니다.`;
+    const vals = `$V_{GS} = ${q(vgs, 'V')}$, $V_{DS} = ${q(vds, 'V')}$, $I_D = ${q(id, 'A')}$${fp.jfet ? '' : `, $V_{ov} = ${q(Math.max(vov, 0), 'V')}$`}`;
+    const roles: Pattern['roles'] = {};
+    if (res.state === 'fet-gate') {
+      out.push({
+        kind: 'jfet-forward', title: `⚠️ JFET 게이트 순방향 — ${t.name}`, elementIds: [t.id],
+        text: [basics, `지금은 게이트–채널 접합이 **순방향**으로 바이어스되어 게이트 전류 ${f(Math.abs(res.pinCurrents[0]), 'A')}가 흐르고 있습니다. JFET는 이렇게 쓰지 않습니다. ${pch ? 'P채널은 게이트를 소스보다 높게' : 'N채널은 게이트를 소스보다 낮게(0 V 이하)'} 걸어야 합니다.`, vals],
+        formulas: [], roles: { [t.id]: { title: '비정상 바이어스', text: '게이트 접합이 순방향으로 켜져 있음' } },
+      });
+      continue;
+    }
+    if (res.state === 'fet-cutoff' || res.state === 'fet-triode') {
+      const rOn = vov > 0 ? 1 / (fp.K * vov) : Infinity;
+      if (rd) roles[rd.id] = { title: '드레인 부하', text: res.state === 'fet-triode' ? 'FET가 켜지면 전원 전압이 거의 다 이 부하에 걸림' : 'FET가 꺼져 있어 전류가 흐르지 않음' };
+      rgs.forEach(r => { roles[r.id] = { title: g.other(r, ng) === 0 ? '게이트 풀다운 저항' : '게이트 저항', text: g.other(r, ng) === 0 ? '입력이 없을 때 게이트를 0 V로 붙잡아 확실히 끔' : '게이트 충·방전 전류를 제한' }; });
+      roles[t.id] = res.state === 'fet-triode'
+        ? { title: '스위치 (ON, 트라이오드)', text: `채널이 저항 약 ${f(rOn, 'Ω')}처럼 동작 — 닫힌 스위치` }
+        : { title: '스위치 (OFF, 차단)', text: fp.jfet ? '게이트 전압이 핀치오프 전압을 넘어 채널이 막힘' : '게이트 전압이 문턱보다 낮아 채널이 없음 — 열린 스위치' };
+      out.push({
+        kind: 'fet-switch', title: `${kind} 스위치 — ${t.name} (${res.state === 'fet-triode' ? 'ON/트라이오드' : 'OFF/차단'})`, elementIds: [t.id, ...(rd ? [rd.id] : []), ...rgs.map(r => r.id)],
+        text: [
+          basics,
+          res.state === 'fet-triode'
+            ? `게이트 전압이 충분히 커서 $V_{DS} < V_{ov}$인 **트라이오드(선형·옴) 영역**에 있습니다. 이 영역의 FET는 게이트 전압으로 값이 정해지는 작은 저항 $R_{DS(on)} \\approx 1/(kV_{ov}) \\approx ${q(rOn, 'Ω')}$처럼 동작하므로 **닫힌 스위치**로 쓸 수 있습니다. BJT와 달리 켜 둔 상태를 유지하는 데 게이트 전류가 필요 없습니다.`
+            : `${fp.jfet ? '$V_{GS}$가 핀치오프 전압을 넘어' : '게이트 전압이 문턱 전압보다 낮아'} 채널이 없으므로 드레인 전류가 0인 **차단 영역**입니다. **열린 스위치**처럼 동작합니다.`,
+          vals,
+        ],
+        formulas: [fp.jfet ? `I_D = I_{DSS}\\left(1 - \\frac{V_{GS}}{V_P}\\right)^2\\;(\\text{포화}),\\quad |V_{GS}| \\ge |V_P| \\Rightarrow I_D = 0` : `R_{DS(on)} \\approx \\frac{1}{k\\,(V_{GS} - V_{th})}`],
+        roles,
+      });
+      continue;
+    }
+    // 포화 영역 → 증폭기
+    const gm = Math.abs(m.gm);
+    const ro = fp.lambda > 0 && id > 0 ? 1 / (fp.lambda * id) : Infinity;
+    const follower = !!rs && !rd;
+    const selfBias = fp.jfet && !!rs && (ng === 0 || rgs.some(r => g.other(r, ng) === 0));
+    rgs.filter(r => g.other(r, ng) === 0 || g.drivenBy(g.other(r, ng))).forEach(r => { roles[r.id] = { title: '게이트 바이어스 저항', text: fp.jfet ? '게이트를 0 V(접지)로 유지 — 전류가 거의 없어 큰 값 사용 가능' : '분압으로 게이트 전압(동작점)을 정함 — 게이트 전류가 0이라 분압비 그대로' }; });
+    if (follower && rs) {
+      roles[rs.id] = { title: '소스 부하', text: '출력 전압이 걸리는 저항' };
+      roles[t.id] = { title: '소스 팔로워(공통 드레인)', text: '소스 전압이 게이트 전압을 따라감' };
+      out.push({
+        kind: 'source-follower', title: `소스 팔로워 — ${t.name}`, elementIds: [t.id, rs.id], outputNode: ns,
+        text: [basics, `드레인이 전원에 직접 연결되고 출력은 소스에서 꺼냅니다. 소스 전압은 게이트 전압보다 $V_{GS}$만큼 낮게 따라가므로 전압 이득은 1보다 약간 작지만, 출력 임피던스가 약 $1/g_m$으로 작아 **버퍼**로 씁니다.`, vals],
+        formulas: [`A_v = \\frac{g_m R_S}{1 + g_m R_S} \\approx ${((gm * R(rs)) / (1 + gm * R(rs))).toPrecision(3)}`, `g_m = ${q(gm, 'S')}`],
+        roles,
+      });
+      continue;
+    }
+    if (rd) roles[rd.id] = { title: '드레인 저항(부하)', text: '드레인 전류의 변화를 전압 변화로 바꿔 출력 전압을 만듦' };
+    if (rs) roles[rs.id] = selfBias ? { title: '자기 바이어스 소스 저항', text: '드레인 전류가 만드는 전압 강하로 V_GS를 음(−)으로 만들어 동작점을 정함' } : { title: '소스 저항', text: '음의 귀환으로 동작점을 안정화(이득은 줄어듦)' };
+    if (cs) roles[cs.id] = { title: '소스 바이패스 커패시터', text: '교류 신호에서 R_S를 단락시켜 이득을 높임' };
+    roles[t.id] = { title: '증폭 소자 (포화 영역)', text: `게이트 전압 변화에 비례해 드레인 전류가 변함 (gm = ${f(gm, 'S')})` };
+    const rsEff = rs && !cs ? R(rs) : 0;
+    const rload = rd ? (isFinite(ro) ? (R(rd) * ro) / (R(rd) + ro) : R(rd)) : NaN;
+    const av = rd ? -(gm * rload) / (1 + gm * rsEff) : NaN;
+    out.push({
+      kind: 'common-source', title: `공통 소스 증폭기 — ${t.name} (포화 영역)`, elementIds: [t.id, ...(rd ? [rd.id] : []), ...(rs ? [rs.id] : [])], outputNode: rd ? nd : undefined,
+      text: [
+        basics,
+        `현재 $V_{DS} \\ge V_{ov}$이므로 드레인 쪽 채널이 끊긴(핀치오프) **포화 영역**입니다. 이 영역에서는 드레인 전압과 거의 무관하게 게이트 전압만으로 전류가 정해지므로 **전압 제어 전류원**처럼 동작하고, 증폭기로 씁니다. (BJT의 '포화'와 이름은 같지만 의미가 반대이니 주의하세요. FET의 포화 영역 = BJT의 활성 영역)`,
+        selfBias && rs ? `게이트가 0 V이고 소스에 ${rs.name}가 있으므로 $V_{GS} = -I_D R_S$가 됩니다. 전류가 늘면 $V_{GS}$가 더 음이 되어 전류를 줄이는 **자기 바이어스**(음의 귀환)로 동작점이 저절로 안정됩니다.` : '',
+        rd ? `입력 전압이 오르면 드레인 전류가 늘고, ${rd.name}의 전압 강하가 커져 드레인 전압은 내려갑니다. 그래서 출력 위상이 입력과 반대(반전)입니다.` : '',
+        vals,
+      ].filter(Boolean),
+      formulas: [
+        fp.jfet ? `I_D = I_{DSS}\\left(1 - \\frac{V_{GS}}{V_P}\\right)^2` : `I_D = \\tfrac12 k\\,(V_{GS} - V_{th})^2(1 + \\lambda V_{DS})`,
+        fp.jfet ? `g_m = \\frac{2I_{DSS}}{|V_P|}\\left(1 - \\frac{V_{GS}}{V_P}\\right) = ${q(gm, 'S')}` : `g_m = \\frac{\\partial I_D}{\\partial V_{GS}} = k\\,V_{ov} = \\frac{2I_D}{V_{ov}} = ${q(gm, 'S')}`,
+        isFinite(ro) ? `r_o = \\frac{1}{\\lambda I_D} = ${q(ro, 'Ω')}` : '',
+        rd ? (rs && !cs
+          ? `A_v \\approx -\\frac{g_m (${sym(rd.name)} \\parallel r_o)}{1 + g_m ${sym(rs.name)}} \\approx ${av.toPrecision(3)}`
+          : `A_v \\approx -g_m (${sym(rd.name)} \\parallel r_o) \\approx ${av.toPrecision(3)}${cs ? `\\quad(${sym(cs.name)}\\text{가 교류에서 }R_S\\text{를 단락})` : ''}`) : '',
       ].filter(Boolean),
       roles,
     });

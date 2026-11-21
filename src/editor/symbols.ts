@@ -1,6 +1,6 @@
 // 회로 기호 SVG (로컬 좌표, 1 격자 = 20px). 회전/반전은 그룹 transform 으로 적용.
 
-import type { Component, CompType } from '../engine/components';
+import { isTransistor, type Component, type CompType } from '../engine/components';
 
 export const G = 20;
 
@@ -59,6 +59,25 @@ export function symbolBody(c: Component, lit = 0): string {
       s += npn ? `<path class="solid" d="M14 20.2L6 19.5L10 13Z"/>` : `<path class="solid" d="M-2 -12.3L6 -13.6L2 -19.5Z"/>`;
       return s;
     }
+    case 'NMOS': case 'PMOS': {
+      // 증가형 MOSFET: 절연된 게이트 판, 끊어진 채널 3조각, 바디는 소스에 연결
+      const n = t === 'NMOS';
+      // N: 드레인 위(20,-40), 소스 아래(20,40) / P: 소스 위, 드레인 아래
+      let s = `<circle cx="4" r="24" class="body"/>` + line(-40, 0, -12, 0) + `<path class="thick" d="M-12 -12V12"/>`;
+      s += `<path class="thick" d="M-5 -15V-7M-5 -4V4M-5 7V15"/>`;
+      s += `<path d="M-5 -11H20V-40M-5 11H20V40M-5 0H20V${n ? 11 : -11}"/>`; // 바디–소스 연결
+      // 바디 화살표: N채널은 채널 쪽(안쪽), P채널은 바깥쪽
+      s += n ? `<path class="solid" d="M-4 0L4 -4.5V4.5Z"/>` : `<path class="solid" d="M14 0L6 -4.5V4.5Z"/>`;
+      return s;
+    }
+    case 'NJF': case 'PJF': {
+      const n = t === 'NJF';
+      let s = `<circle cx="4" r="24" class="body"/>` + `<path class="thick" d="M-4 -15V15"/>`;
+      s += `<path d="M-40 0H-4M-4 -10H20V-40M-4 10H20V40"/>`;
+      // 게이트 화살표: N채널은 게이트→채널(안쪽), P채널은 바깥쪽
+      s += n ? `<path class="solid" d="M-5 0L-14 -4.5V4.5Z"/>` : `<path class="solid" d="M-22 0L-13 -4.5V4.5Z"/>`;
+      return s;
+    }
     case 'OPAMP':
       return `<path class="body" d="M-40 -40L40 0L-40 40Z"/>` + line(-60, -20, -40, -20) + line(-60, 20, -40, 20) + line(40, 0, 60, 0) +
         minus(-30, -20, 4) + plus(-30, 20, 4);
@@ -85,7 +104,7 @@ export function symbolTexts(c: Component): { x: number; y: number; text: string;
 export function hitBox(t: CompType): [number, number, number, number] {
   switch (t) {
     case 'V': case 'VAC': case 'VPULSE': case 'I': return [-20, -40, 40, 80];
-    case 'NPN': case 'PNP': return [-40, -40, 66, 80];
+    case 'NPN': case 'PNP': case 'NMOS': case 'PMOS': case 'NJF': case 'PJF': return [-40, -40, 70, 80];
     case 'OPAMP': return [-60, -40, 120, 80];
     case 'GND': return [-14, -4, 28, 28];
     case 'LABEL': return [-2, -10, 58, 20];
@@ -96,7 +115,7 @@ export function hitBox(t: CompType): [number, number, number, number] {
 /** 이름/값 라벨 위치 (화면 좌표 오프셋, 회전 고려) */
 export function labelAnchor(c: Component): { name: [number, number, string]; value: [number, number, string] } {
   const vertical = ['V', 'VAC', 'VPULSE', 'I'].includes(c.type) ? c.rot % 2 === 0 : c.rot % 2 === 1;
-  if (c.type === 'NPN' || c.type === 'PNP') return { name: [30, -4, 'start'], value: [30, 12, 'start'] };
+  if (isTransistor(c.type)) return { name: [32, -4, 'start'], value: [32, 12, 'start'] };
   if (c.type === 'OPAMP') return { name: [0, -46, 'middle'], value: [0, 56, 'middle'] };
   if (vertical) return { name: [24, -4, 'start'], value: [24, 12, 'start'] };
   return { name: [0, -22, 'middle'], value: [0, 32, 'middle'] };

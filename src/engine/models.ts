@@ -90,3 +90,44 @@ export function bjtIV(vbe: number, vbc: number, bf: number) {
     dib_dvbe: gF / bf, dib_dvbc: gR / br,
   };
 }
+
+/**
+ * FET 정사각 법칙(Shichman–Hodges) 모델 — N채널 기준, vds ≥ 0 이 아니면 드레인·소스를 뒤바꿔 계산.
+ * K: MOSFET 은 k(=μCox·W/L), JFET 은 2·IDSS/VP².  vt: MOSFET 문턱전압, JFET 은 핀치오프 전압(N채널은 음수).
+ * 반환: 드레인으로 들어가는 전류 id 와 미분 gm = ∂id/∂vgs, gds = ∂id/∂vds, 동작 영역
+ */
+export function fetIV(vgs: number, vds: number, vt: number, K: number, lambda: number):
+  { id: number; gm: number; gds: number; region: 'cutoff' | 'triode' | 'sat' } {
+  const f = (a: number, b: number) => {
+    // a = vgs, b = vds ≥ 0
+    const vov = a - vt;
+    if (vov <= 0) return { i: 0, fa: 0, fb: 0, region: 'cutoff' as const };
+    const cl = 1 + lambda * b;
+    if (b < vov) {
+      const base = K * (vov * b - (b * b) / 2);
+      return { i: base * cl, fa: K * b * cl, fb: K * (vov - b) * cl + base * lambda, region: 'triode' as const };
+    }
+    const base = (K / 2) * vov * vov;
+    return { i: base * cl, fa: K * vov * cl, fb: base * lambda, region: 'sat' as const };
+  };
+  if (vds >= 0) {
+    const r = f(vgs, vds);
+    return { id: r.i, gm: r.fa, gds: r.fb, region: r.region };
+  }
+  // 역방향: 드레인이 소스 역할 → i = −F(vgs − vds, −vds)
+  const r = f(vgs - vds, -vds);
+  return { id: -r.i, gm: -r.fa, gds: r.fa + r.fb, region: r.region };
+}
+
+/** FET 소자 속성 → 모델 상수 (P채널은 부호를 뒤집어 N채널처럼 계산) */
+export function fetParams(type: string, props: Props): { s: 1 | -1; vt: number; K: number; lambda: number; jfet: boolean } {
+  const s = type === 'NMOS' || type === 'NJF' ? 1 : -1;
+  const lambda = Math.max(num(props, 'lambda', 0.01), 0);
+  if (type === 'NJF' || type === 'PJF') {
+    const vp = Math.abs(num(props, 'vp', s === 1 ? -2 : 2)) || 2;
+    const idss = Math.abs(num(props, 'idss', 0.01)) || 1e-6;
+    return { s, vt: -vp, K: (2 * idss) / (vp * vp), lambda, jfet: true };
+  }
+  const vth = Math.abs(num(props, 'vth', s === 1 ? 2 : -2));
+  return { s, vt: vth, K: Math.max(Math.abs(num(props, 'k', 0.01)), 1e-12), lambda, jfet: false };
+}
